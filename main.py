@@ -11,6 +11,7 @@ import torch.nn as nn
 import torchvision
 from torchvision import transforms
 
+MODIFIED_CODE = True
 
 def set_seed(seed):
     """
@@ -155,7 +156,10 @@ class VQADataset(torch.utils.data.Dataset):
         
         # 次に、質問文を処理します。質問文は文字列として格納されており、これをone-hot表現に変換することで、モデルが処理しやすい形式にします。one-hot表現では、質問文に含まれる各単語が、辞書(self.idx2question)に基づいてベクトルの特定の位置にマッピングされます。質問文に未知の単語が含まれる場合は、特別な"未知語"用の要素に1が設定されます。
         question = np.zeros(len(self.idx2question) + 1)  # 未知語用の要素を追加
-        question_words = self.df["question"][idx].split(" ")
+        if MODIFIED_CODE: # 質問文の前処理．回答については評価指標に合わせるため前処理をしていますが，質問文には前処理を施していません．そのため同じ単語であっても大文字，小文字で異なる単語として扱われます．大文字・小文字の統一，冠詞の削除など適切な処理をすることで，性能向上が見込めます．
+            question_words = process_text(self.df["question"][idx]).split(" ")
+        else:
+            question_words = self.df["question"][idx].split(" ")
         for word in question_words:
             try:
                 question[self.question2idx[word]] = 1  # one-hot表現に変換
@@ -359,7 +363,10 @@ class VQAModel(nn.Module):
     def __init__(self, vocab_size: int, n_answer: int):
         # __init__メソッドでは、モデルの構造を定義しています。まず、super().__init__()を呼び出して、基底クラスのコンストラクタを初期化します。次に、ResNet18関数を使用して、画像特徴量を抽出するためのResNet18モデルをself.resnetに割り当てます。nn.Linear(vocab_size, 512)を使用して、質問テキストの特徴量をエンコードするための線形変換をself.text_encoderに設定します。最後に、self.fcには、画像特徴量とテキスト特徴量を結合した後に、最終的な回答を生成するための全結合層のシーケンスが設定されています。
         super().__init__()
-        self.resnet = ResNet18() ### ここでResNetを利用する
+        if False:
+            self.resnet = ResNet50()
+        else:
+            self.resnet = ResNet18()
         self.text_encoder = nn.Linear(vocab_size, 512)
 
         self.fc = nn.Sequential(
@@ -396,6 +403,7 @@ def train(model, dataloader, optimizer, criterion, device):
     total_acc = 0
     simple_acc = 0
 
+    count = 0
     start = time.time()
     for image, question, answers, mode_answer in dataloader:
         image, question, answer, mode_answer = \
@@ -412,6 +420,10 @@ def train(model, dataloader, optimizer, criterion, device):
         total_acc += VQA_criterion(pred.argmax(1), answers)  # VQA accuracy
         simple_acc += (pred.argmax(1) == mode_answer).float().mean().item()  # simple accuracy
 
+        count = count + 1
+        if count % 5 == 0:
+            print(f"count: {count} / {len(dataloader)}, train loss: {total_loss / count:.4f}")
+            
     return total_loss / len(dataloader), total_acc / len(dataloader), simple_acc / len(dataloader), time.time() - start
 
 
@@ -450,7 +462,7 @@ def eval(model, dataloader, optimizer, criterion, device):
 
 def main():
     """
-    このコードは、PyTorchを使用して視覚質問応答(VQA)モデルを訓練し、評価するプロセスを実装しています。VQAタスクは、画像とそれに関連する質問が与えられたときに、適切な回答を生成することを目指します。
+    PyTorchを使用して視覚質問応答(VQA)モデルを訓練し、評価するプロセスを実装しています。VQAタスクは、画像とそれに関連する質問が与えられたときに、適切な回答を生成することを目指します。
 
     このコードは、データの前処理からモデルの訓練、評価、そして結果の保存まで、VQAタスクの一般的なワークフローをカバーしています。
     """
@@ -463,15 +475,27 @@ def main():
 
     # dataloader / model
     # 次に、訓練用とテスト用のデータセットを準備します。これには、画像のリサイズとテンソルへの変換を含む前処理が含まれます。VQADatasetクラスは、これらのデータセットを管理し、DataLoaderを使用してバッチ処理とデータのシャッフルを行います。
-    transform = transforms.Compose([
+    if MODIFIED_CODE: # 画像の前処理には形状を同じにするためのResizeのみを利用しています．第5回の演習で紹介したようなデータ拡張を追加することで，疑似的にデータを増やし汎化性能の向上が見込めます．
+        transform = transforms.Compose([
         transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
         transforms.ToTensor()
-    ])
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor()
+        ])
     train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
     test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
     test_dataset.update_dict(train_dataset)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
+    if MODIFIED_CODE:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
+    else:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     # モデルはVQAModelクラスのインスタンスで、質問の語彙サイズと回答の数に基づいて初期化されます。このモデルは選択されたデバイスに移動されます。
@@ -479,7 +503,7 @@ def main():
 
     # optimizer / criterion
     # 訓練プロセスでは、クロスエントロピー損失とAdamオプティマイザーが使用されます。訓練は1エポックだけ行われ、各エポックで訓練データを使用してモデルを更新し、訓練の損失と精度を計算します。
-    num_epoch = 1
+    num_epoch = 25
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
@@ -493,7 +517,8 @@ def main():
               f"train simple acc: {train_simple_acc:.4f}")
 
     # 提出用ファイルの作成
-    # 最後に、モデルを評価モードに切り替え、テストデータセット上でモデルを評価します。各画像と質問のペアに対して、モデルは最も可能性の高い回答を予測し、これらの予測を使用して提出用ファイルを作成します。モデルの状態と予測結果はそれぞれmodel.pthとsubmission.npyに保存されます。    model.eval()
+    # 最後に、モデルを評価モードに切り替え、テストデータセット上でモデルを評価します。各画像と質問のペアに対して、モデルは最も可能性の高い回答を予測し、これらの予測を使用して提出用ファイルを作成します。モデルの状態と予測結果はそれぞれmodel.pthとsubmission.npyに保存されます。
+    model.eval()
     submission = []
     for image, question in test_loader:
         image, question = image.to(device), question.to(device)
@@ -517,3 +542,14 @@ if __name__ == "__main__":
 #モデルアーキテクチャの改善：ResNet50など、より深いモデルを使用します。
 #適切な損失関数の選択：Focal Lossなど、バランスの取れた損失関数を使用します。
 #アンサンブル学習：複数のモデルを学習し、それらの予測を平均化することで精度を向上させます。
+"""
+考えられる工夫の例
+- 質問文の前処理．
+  - 回答については評価指標に合わせるため前処理をしていますが，質問文には前処理を施していません．そのため同じ単語であっても大文字，小文字で異なる単語として扱われます．大文字・小文字の統一，冠詞の削除など適切な処理をすることで，性能向上が見込めます．
+- 質問文の表現．
+  - ベースラインでは，質問文をモデルに入力する際にはone-hotベクトルにしています．この表現をtokenizer等を利用して分散表現にすることで，モデルが学習しやすい表現となり，性能向上が見込めます．
+- 回答の出力候補の変更．
+  - ベースラインは非常に簡素なモデルとなっており，出力は訓練データに存在する回答例の中からどれが適切かを選択する，クラス分類の形式になっています．これでは訓練データには存在しない回答は出力不可能なため，より大きなコーパスを用いると良いでしょう（huggingfaceでは，VizWizに利用できる[class_mapping](https://huggingface.co/spaces/CVPR/VizWiz-CLIP-VQA/raw/main/data/annotations/class_mapping.csv)が存在します）．
+- 画像の前処理．
+  - 画像の前処理には形状を同じにするためのResizeのみを利用しています．第5回の演習で紹介したようなデータ拡張を追加することで，疑似的にデータを増やし汎化性能の向上が見込めます．
+"""
