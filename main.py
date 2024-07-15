@@ -357,14 +357,17 @@ def ResNet18():
 def ResNet50():
     return ResNet(BottleneckBlock, [3, 4, 6, 3])
 
+def ResNet34():
+    return ResNet(BasicBlock, [3, 4, 6, 3])
+
 
 class VQAModel(nn.Module):
     # このコードは、視覚質問応答(VQA)モデルの定義を示しています。VQAは、画像とそれに関する質問が与えられたときに、適切な回答を生成するタスクです。このモデルは、PyTorchのnn.Moduleクラスを継承しており、ニューラルネットワークモデルを構築するための基本クラスです。
     def __init__(self, vocab_size: int, n_answer: int):
         # __init__メソッドでは、モデルの構造を定義しています。まず、super().__init__()を呼び出して、基底クラスのコンストラクタを初期化します。次に、ResNet18関数を使用して、画像特徴量を抽出するためのResNet18モデルをself.resnetに割り当てます。nn.Linear(vocab_size, 512)を使用して、質問テキストの特徴量をエンコードするための線形変換をself.text_encoderに設定します。最後に、self.fcには、画像特徴量とテキスト特徴量を結合した後に、最終的な回答を生成するための全結合層のシーケンスが設定されています。
         super().__init__()
-        if False:
-            self.resnet = ResNet50()
+        if MODIFIED_CODE:
+            self.resnet = ResNet34()
         else:
             self.resnet = ResNet18()
         self.text_encoder = nn.Linear(vocab_size, 512)
@@ -422,7 +425,7 @@ def train(model, dataloader, optimizer, criterion, device):
 
         count = count + 1
         if count % 5 == 0:
-            print(f"count: {count} / {len(dataloader)}, train loss: {total_loss / count:.4f}")
+            print(f"count: {count} / {len(dataloader)}, train loss: {total_loss / count:.4f}, train_acc : {total_acc / count:.4f}, simple_acc : {simple_acc / count:.4f}")
             
     return total_loss / len(dataloader), total_acc / len(dataloader), simple_acc / len(dataloader), time.time() - start
 
